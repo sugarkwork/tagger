@@ -150,7 +150,7 @@ class Tagger:
 
         return res
 
-    async def tag_batch(self, images:list[Image.Image], model_name=None, threshold=None, character_threshold=None, exclude_tags="", replace_underscore=True, trailing_comma=False):
+    async def tag_batch(self, images: list[tuple[str, Image.Image]], model_name=None, threshold=None, character_threshold=None, exclude_tags="", replace_underscore=True, trailing_comma=False):
         if model_name is None:
             model_name = self.defaults["model"]
 
@@ -169,7 +169,8 @@ class Tagger:
 
         # 画像たちを前処理してリスト化
         prepared = []
-        for img in images:
+        filenames = []  # ファイル名リスト
+        for filename, img in images:
             ratio = float(height) / max(img.size)
             new_size = tuple([int(x * ratio) for x in img.size])
             img = img.resize(new_size, Image.LANCZOS)
@@ -178,6 +179,7 @@ class Tagger:
             img = np.array(square).astype(np.float32)
             img = img[:, :, ::-1]  # RGB -> BGR
             prepared.append(img)
+            filenames.append(filename)
 
         # まとめてバッチ化
         batch = np.stack(prepared, axis=0)
@@ -205,7 +207,7 @@ class Tagger:
         probs = model.run([label_name], {input.name: batch})[0]
 
         results = []
-        for prob in probs:  # バッチなので1枚ずつ
+        for filename, prob in zip(filenames, probs):  # ファイル名と一緒に
             result = list(zip(tags, prob))
             general = [item for item in result[general_index:character_index] if item[1] > threshold]
             character = [item for item in result[character_index:] if item[1] > character_threshold]
@@ -215,9 +217,10 @@ class Tagger:
             all_tags = [tag for tag in all_tags if tag[0] not in remove]
 
             res = ("" if trailing_comma else ", ").join((item[0].replace("(", "\\(").replace(")", "\\)") + (", " if trailing_comma else "") for item in all_tags))
-            results.append(res)
+            results.append((filename, res))  # ファイル名とタグ結果のペアで返す
 
         return results
+
 
     async def download_model(self, model):
         url = f"https://huggingface.co/SmilingWolf/{model}/resolve/main/"
@@ -242,8 +245,11 @@ async def main():
     print(f"Single Image Time: {time.time() - start_time}")
     
     start_time = time.time()
-    images = [Image.open(image_filename) for image_filename in image_filenames]
-    print(await tagger.tag_batch(images))
+    images = [(filename, Image.open(filename)) for filename in image_filenames]
+    results = await tagger.tag_batch(images)
+
+    for filename, tags in results:
+        print(f"{filename}: {tags}")
     print(f"Batch Image Time: {time.time() - start_time}")
 
 
