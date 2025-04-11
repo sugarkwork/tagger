@@ -10,7 +10,7 @@ import asyncio
 class Tagger:
     models_dir = "models"
     defaults = {
-        "model": "wd-v1-4-vit-tagger-v2",
+        "model": "wd-eva02-large-tagger-v3",
         "threshold": 0.35,
         "character_threshold": 0.85,
         "replace_underscore": False,
@@ -18,9 +18,12 @@ class Tagger:
         "exclude_tags": ""
     }
     all_models = (
-        "wd-v1-4-moat-tagger-v2", 
+        "wd-v1-4-moat-tagger-v2", "wd-v1-4-vit-tagger",
         "wd-v1-4-convnext-tagger-v2", "wd-v1-4-convnext-tagger",
-        "wd-v1-4-convnextv2-tagger-v2", "wd-v1-4-vit-tagger-v2"
+        "wd-v1-4-convnextv2-tagger-v2", "wd-v1-4-vit-tagger-v2",
+        "wd-v1-4-swinv2-tagger-v2", "wd-vit-tagger-v3",
+        "wd-swinv2-tagger-v3", "wd-convnext-tagger-v3",
+        "wd-eva02-large-tagger-v3"
     )
     loaded_models = {}
 
@@ -39,6 +42,8 @@ class Tagger:
 
         session = InferenceSession(name, providers=ort.get_available_providers())
         self.loaded_models[model_name] = session
+        print(f"Available Providers:{ort.get_available_providers()}")
+        print(f"Selected Providers:{session.get_providers()}")
         return session
 
     @staticmethod
@@ -72,21 +77,9 @@ class Tagger:
             destination = self.get_ext_dir(destination)
         try:
             async with session.get(url) as response:
-                total = int(response.headers.get('content-length', 0)) or None
-                n = 0
-
                 with open(destination, mode='wb') as f:
-                    perc = 0
-                    perc_last = ""
-                    
                     async for chunk in response.content.iter_chunked(2048):
                         f.write(chunk)
-                        n += len(chunk)
-                        perc = round(n / total, 2)
-                        parc_str = f"{perc*100:.0f}%"
-                        if parc_str != perc_last:
-                            perc_last = parc_str
-                            print(f"Downloaded {n} of {total} bytes ({parc_str})")
 
         finally:
             if close_session and session is not None:
@@ -157,9 +150,78 @@ class Tagger:
 
         return res
 
+    async def tag_batch(self, images:list[Image.Image], model_name=None, threshold=None, character_threshold=None, exclude_tags="", replace_underscore=True, trailing_comma=False):
+        if model_name is None:
+            model_name = self.defaults["model"]
+
+        if model_name not in self.all_models:
+            raise ValueError(f"Model {model_name} not found")
+        
+        if threshold is None:
+            threshold = self.defaults["threshold"]
+
+        if character_threshold is None:
+            character_threshold = self.defaults["character_threshold"]
+
+        model = await self.load_model(model_name)
+        input = model.get_inputs()[0]
+        height = input.shape[1]
+
+        # 画像たちを前処理してリスト化
+        prepared = []
+        for img in images:
+            ratio = float(height) / max(img.size)
+            new_size = tuple([int(x * ratio) for x in img.size])
+            img = img.resize(new_size, Image.LANCZOS)
+            square = Image.new("RGB", (height, height), (255, 255, 255))
+            square.paste(img, ((height - new_size[0]) // 2, (height - new_size[1]) // 2))
+            img = np.array(square).astype(np.float32)
+            img = img[:, :, ::-1]  # RGB -> BGR
+            prepared.append(img)
+
+        # まとめてバッチ化
+        batch = np.stack(prepared, axis=0)
+
+        # タグの読み込み
+        tags = []
+        general_index = None
+        character_index = None
+        with open(os.path.join(self.models_dir, model_name + ".csv")) as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                if general_index is None and row[2] == "0":
+                    general_index = reader.line_num - 2
+                elif character_index is None and row[2] == "4":
+                    character_index = reader.line_num - 2
+                if replace_underscore:
+                    tags.append(row[1].replace("_", " "))
+                else:
+                    tags.append(row[1])
+
+        label_name = model.get_outputs()[0].name
+
+        # バッチ推論
+        probs = model.run([label_name], {input.name: batch})[0]
+
+        results = []
+        for prob in probs:  # バッチなので1枚ずつ
+            result = list(zip(tags, prob))
+            general = [item for item in result[general_index:character_index] if item[1] > threshold]
+            character = [item for item in result[character_index:] if item[1] > character_threshold]
+
+            all_tags = character + general
+            remove = [s.strip() for s in exclude_tags.lower().split(",")]
+            all_tags = [tag for tag in all_tags if tag[0] not in remove]
+
+            res = ("" if trailing_comma else ", ").join((item[0].replace("(", "\\(").replace(")", "\\)") + (", " if trailing_comma else "") for item in all_tags))
+            results.append(res)
+
+        return results
 
     async def download_model(self, model):
         url = f"https://huggingface.co/SmilingWolf/{model}/resolve/main/"
+        print(f"Downloading {model} ( {url} )")
         async with aiohttp.ClientSession(loop=asyncio.get_event_loop()) as session:
             await self.download_to_file(
                 f"{url}model.onnx", os.path.join("models",f"{model}.onnx"), session=session)
@@ -169,12 +231,20 @@ class Tagger:
 
         return
 
-
 async def main():
+    image_filenames = ["test1.png", "test2.png", "test3.jpg", "test4.jpg"]
     tagger = Tagger()
 
-    print(await tagger.tag(Image.open("test1.png")))
-    print(await tagger.tag(Image.open("test2.png")))
+    import time
+    start_time = time.time()
+    for image_filename in image_filenames:
+        print(await tagger.tag(Image.open(image_filename)))
+    print(f"Single Image Time: {time.time() - start_time}")
+    
+    start_time = time.time()
+    images = [Image.open(image_filename) for image_filename in image_filenames]
+    print(await tagger.tag_batch(images))
+    print(f"Batch Image Time: {time.time() - start_time}")
 
 
 if __name__ == "__main__":
