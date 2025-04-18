@@ -70,8 +70,13 @@ class TensorRTTagger:
 
     def infer_batch(self, images: list[tuple[str, Image.Image]], threshold=0.35, character_threshold=0.85, batch_size=4):
         results = []
+        if images is None:
+            return results
         if isinstance(images, str):
             images = self.load_images([images])
+        if isinstance(images, list):
+            if len(images) == 0:
+                return results
         if isinstance(images[0], str):
             images = self.load_images(images)
         if isinstance(images, Image.Image):
