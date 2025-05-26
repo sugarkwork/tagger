@@ -8,7 +8,6 @@ import aiohttp
 import asyncio
 
 class Tagger:
-    models_dir = "models"
     defaults = {
         "model": "wd-eva02-large-tagger-v3",
         "threshold": 0.35,
@@ -28,6 +27,7 @@ class Tagger:
     loaded_models = {}
 
     def __init__(self):
+        self.models_dir = os.path.join(os.path.dirname(__file__), "models")
         if not os.path.exists(self.models_dir):
             os.makedirs(self.models_dir)
 

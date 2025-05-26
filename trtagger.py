@@ -8,14 +8,19 @@ import os
 import subprocess
 import requests
 import os
+import multiprocessing as mp
+from pathlib import Path
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
 class TensorRTTagger:
-    models_dir = "models"
-    
-    def __init__(self, model="wd-eva02-large-tagger-v3"):
+    def __init__(self, model="wd-eva02-large-tagger-v3", models_dir=None):
+        if models_dir is not None:
+            self.models_dir = models_dir
         # エンジン読み込み
+        self.models_dir = os.path.join(os.path.dirname(__file__), "models")
+        if not os.path.exists(self.models_dir):
+            os.makedirs(self.models_dir)
         self.download_model(model)
         engine_name = f"{model}.trt"
         tag_csv_name = f"{model}.csv"
@@ -23,7 +28,7 @@ class TensorRTTagger:
         tag_csv_path = os.path.join(self.models_dir, tag_csv_name)
 
         if not os.path.exists(engine_path):
-            TensorRTTagger.convert(f"{model}.onnx", engine_name)
+            self.convert(f"{model}.onnx", engine_name)
 
         self.engine = self.load_engine(engine_path)
         self.context = self.engine.create_execution_context()
@@ -121,12 +126,11 @@ class TensorRTTagger:
         res = ", ".join(item[0] for item in all_tags)
         return res
     
-    @staticmethod
-    def convert(onnx_path, trt_path):
-        if os.path.exists(os.path.join(TensorRTTagger.models_dir, trt_path)):
+    def convert(self, onnx_path, trt_path):
+        if os.path.exists(os.path.join(self.models_dir, trt_path)):
             return
         # convert
-        cmd = f"trtexec --onnx={os.path.join(TensorRTTagger.models_dir, onnx_path)} --saveEngine={os.path.join(TensorRTTagger.models_dir, trt_path)} --minShapes=input:1x448x448x3 --optShapes=input:4x448x448x3 --maxShapes=input:8x448x448x3 --verbose"
+        cmd = f"trtexec --onnx={os.path.join(self.models_dir, onnx_path)} --saveEngine={os.path.join(self.models_dir, trt_path)} --minShapes=input:1x448x448x3 --optShapes=input:4x448x448x3 --maxShapes=input:8x448x448x3 --verbose"
         subprocess.run(cmd, shell=True)
     
     @staticmethod
@@ -215,4 +219,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
